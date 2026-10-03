@@ -229,6 +229,8 @@ def resolve_sap_signer(configured: Path | None) -> Path:
         [
             Path(__file__).resolve().parent / "sapsigner.exe",
             project_root / "sapsigner.exe",
+            project_root / "vendor" / "ipatool-webGUI"
+            / "tools" / "sapsigner.exe",
             project_root / "work" / "vendor" / "ipatool-webGUI"
             / "tools" / "sapsigner.exe",
             Path(os.environ.get("LOCALAPPDATA", ""))

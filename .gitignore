@@ -4,6 +4,7 @@
 /observations/
 /reports/
 /work/
+/vendor/
 *.mitm
 *.musicdb
 *.itdb

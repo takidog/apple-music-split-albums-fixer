@@ -15,6 +15,41 @@ The main command scans the current library, lists only high-confidence repairs, 
 
 Python packages are declared inside the scripts and installed automatically by `uv`.
 
+## SAP signer source and setup
+
+The SAP signer is not an Apple Music Split Albums Fixer binary. Its upstream source is [t0rr3sp3dr0/sapsigner](https://github.com/t0rr3sp3dr0/sapsigner), which publishes the implementation under the [Apache-2.0 license](https://github.com/t0rr3sp3dr0/sapsigner/blob/master/LICENSE).
+
+The tested prebuilt Windows bundle comes from [pdx15/ipatool-webGUI](https://github.com/pdx15/ipatool-webGUI), an MIT-licensed project whose Windows package uses `sapsigner.exe` for SAP action signatures. You can download a Windows archive from its [GitHub Releases](https://github.com/pdx15/ipatool-webGUI/releases), or clone its repository into this project's `vendor` directory:
+
+```powershell
+git clone --depth 1 https://github.com/pdx15/ipatool-webGUI.git .\vendor\ipatool-webGUI
+```
+
+The main CLI automatically detects this location:
+
+```text
+vendor\ipatool-webGUI\tools\sapsigner.exe
+```
+
+Keep the downloaded `tools` directory intact. The signer also needs `libunicorn.dll`, `ucworker.dll`, and the `sap-cache` directory beside it. Copying only `sapsigner.exe` will not work. If you extract the release elsewhere, pass its path explicitly:
+
+```powershell
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py `
+  --sap-signer 'C:\path\to\ipatool-webGUI\tools\sapsigner.exe'
+```
+
+The exact binary used during development came from `pdx15/ipatool-webGUI` commit [`0adb7072dc638c24913beef41c6cc92cc4aa4e6b`](https://github.com/pdx15/ipatool-webGUI/tree/0adb7072dc638c24913beef41c6cc92cc4aa4e6b). Its SHA-256 is:
+
+```text
+A8A536DBBE3BD4E179C988B799E9E4F1CBFFB6DF787C8433AAFE2E0B7AC5A920
+```
+
+Verify it in PowerShell with:
+
+```powershell
+(Get-FileHash '.\vendor\ipatool-webGUI\tools\sapsigner.exe' -Algorithm SHA256).Hash
+```
+
 ## Interactive repair
 
 From the project directory, run:

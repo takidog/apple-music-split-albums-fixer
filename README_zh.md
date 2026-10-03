@@ -15,6 +15,41 @@
 
 Python 相依套件已宣告在各個腳本內，`uv` 會在執行時自動安裝。
 
+## SAP signer 來源與安裝方式
+
+SAP signer 不是 Apple Music Split Albums Fixer 自行提供的執行檔。其上游原始碼是 [t0rr3sp3dr0/sapsigner](https://github.com/t0rr3sp3dr0/sapsigner)，採用 [Apache-2.0 授權](https://github.com/t0rr3sp3dr0/sapsigner/blob/master/LICENSE)。
+
+本專案測試使用的 Windows 預編譯套件來自 [pdx15/ipatool-webGUI](https://github.com/pdx15/ipatool-webGUI)。該專案採用 MIT 授權，並在 Windows 工具套件中使用 `sapsigner.exe` 產生 SAP action signature。使用者可以從它的 [GitHub Releases](https://github.com/pdx15/ipatool-webGUI/releases) 下載 Windows 壓縮檔，或將儲存庫 clone 到本專案的 `vendor` 目錄：
+
+```powershell
+git clone --depth 1 https://github.com/pdx15/ipatool-webGUI.git .\vendor\ipatool-webGUI
+```
+
+主 CLI 會自動尋找：
+
+```text
+vendor\ipatool-webGUI\tools\sapsigner.exe
+```
+
+請保留下載套件內完整的 `tools` 目錄。Signer 還需要同一目錄中的 `libunicorn.dll`、`ucworker.dll` 與 `sap-cache` 目錄；只複製 `sapsigner.exe` 無法執行。若將 release 解壓縮到其他位置，請明確指定路徑：
+
+```powershell
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py `
+  --sap-signer 'C:\path\to\ipatool-webGUI\tools\sapsigner.exe'
+```
+
+開發期間實際測試的執行檔來自 `pdx15/ipatool-webGUI` commit [`0adb7072dc638c24913beef41c6cc92cc4aa4e6b`](https://github.com/pdx15/ipatool-webGUI/tree/0adb7072dc638c24913beef41c6cc92cc4aa4e6b)，其 SHA-256 為：
+
+```text
+A8A536DBBE3BD4E179C988B799E9E4F1CBFFB6DF787C8433AAFE2E0B7AC5A920
+```
+
+可使用 PowerShell 驗證：
+
+```powershell
+(Get-FileHash '.\vendor\ipatool-webGUI\tools\sapsigner.exe' -Algorithm SHA256).Hash
+```
+
 ## 互動式修復
 
 在專案目錄執行：
