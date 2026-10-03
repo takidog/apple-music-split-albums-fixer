@@ -1,0 +1,35 @@
+# Local captures and account/library state
+/captures/
+/backups/
+/observations/
+/reports/
+/work/
+*.mitm
+*.musicdb
+*.itdb
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.jsonl
+*.plist
+*.env
+.env
+
+# Per-machine research notes / outputs
+/FINDINGS.md
+/RESEARCH_LOG.md
+/RESEARCG_README.md
+
+# Build and interpreter outputs
+**/bin/
+**/obj/
+**/__pycache__/
+*.py[cod]
+.venv/
+uv.lock
+
+# OS/editor noise
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
