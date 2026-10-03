@@ -19,6 +19,11 @@
 /FINDINGS.md
 /RESEARCH_LOG.md
 /RESEARCG_README.md
+/tools/amp-probe/
+/tools/musicdb-local/
+/tools/winmd-inspect/
+/tools/make_full_items_replay.py
+/tools/verify_readonly_replay.py
 
 # Build and interpreter outputs
 **/bin/
