@@ -404,7 +404,18 @@ def main() -> int:
         capture = capture.expanduser().resolve()
         if not capture.is_file():
             raise ValueError(f"capture not found: {capture}")
-        signer = resolve_sap_signer(args.sap_signer)
+        try:
+            signer = resolve_sap_signer(args.sap_signer)
+        except ValueError:
+            if args.yes:
+                raise
+            entered = input("Path to sapsigner.exe: ").strip().strip('"')
+            if not entered:
+                raise ValueError(
+                    "sapsigner.exe was not found; pass --sap-signer or set "
+                    "APPLE_MUSIC_SAP_SIGNER"
+                )
+            signer = resolve_sap_signer(Path(entered))
         latest_library_context(capture)
         print(f"Cloud capture: {capture}")
         print(f"SAP signer: {signer}")

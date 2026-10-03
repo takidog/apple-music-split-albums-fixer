@@ -92,7 +92,7 @@ uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py `
   --sap-signer 'C:\path\to\sapsigner.exe'
 ```
 
-Use `--database` for a nonstandard library location. The program searches for the newest `.mitm` file in the project `captures` directory when `--capture` is omitted. It searches for a signer passed through `--sap-signer`, the `APPLE_MUSIC_SAP_SIGNER` environment variable, `tools\sapsigner.exe`, and known Signum installation paths.
+Use `--database` for a nonstandard library location. The program searches for the newest `.mitm` file in the project `captures` directory when `--capture` is omitted. It searches for a signer passed through `--sap-signer`, the `APPLE_MUSIC_SAP_SIGNER` environment variable, the project root, `tools\sapsigner.exe`, the development `work\vendor\ipatool-webGUI` checkout, and known Signum installation paths. An interactive run asks for the path if none of those locations contain it.
 
 `--offline-copy` is available for testing a detached database copy without stopping or starting Apple Music. Do not use it for the live library.
 

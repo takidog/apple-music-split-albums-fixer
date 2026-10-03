@@ -220,6 +220,7 @@ def request_context(flow: http.HTTPFlow) -> tuple[str, dict[str, str]]:
 
 def resolve_sap_signer(configured: Path | None) -> Path:
     candidates: list[Path] = []
+    project_root = Path(__file__).resolve().parent.parent
     if configured is not None:
         candidates.append(configured)
     if value := os.environ.get("APPLE_MUSIC_SAP_SIGNER"):
@@ -227,6 +228,9 @@ def resolve_sap_signer(configured: Path | None) -> Path:
     candidates.extend(
         [
             Path(__file__).resolve().parent / "sapsigner.exe",
+            project_root / "sapsigner.exe",
+            project_root / "work" / "vendor" / "ipatool-webGUI"
+            / "tools" / "sapsigner.exe",
             Path(os.environ.get("LOCALAPPDATA", ""))
             / "Signum" / "resources" / "apple-tools" / "windows-x64"
             / "v3-legacy" / "sapsigner.exe",
