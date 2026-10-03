@@ -6,20 +6,22 @@
 #   "requests>=2.32,<3",
 # ]
 # ///
-"""Build and experimentally replay Cloud Library /edit requests.
+"""Build and send signed Cloud Library /edit requests.
 
 Default mode is a dry run. --apply attempts a two-phase compilation-field touch
 for the locally reassigned tracks: first the opposite value, then the album's
-consensus value. Apple also requires a request-specific X-Apple-ActionSignature;
-captured signatures cannot be reused, so direct apply is expected to be rejected
-until signature generation is implemented. Sensitive values are never written
-to reports.
+consensus value. Apple requires a request-specific X-Apple-ActionSignature, so
+--apply also requires a compatible Windows SAP signer. Sensitive values are
+never written to reports.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
+import subprocess
 import struct
 import sys
 import time
@@ -179,7 +181,7 @@ def request_context(flow: http.HTTPFlow) -> tuple[str, dict[str, str]]:
     excluded = {
         "host", "content-length", "content-type", "accept-encoding", "connection",
         "if-none-match", "if-match", "client-cloud-daap-request-reason",
-        "x-daap-client-features-versions",
+        "x-daap-client-features-versions", "x-apple-actionsignature",
     }
     headers = {
         name: value
@@ -191,19 +193,171 @@ def request_context(flow: http.HTTPFlow) -> tuple[str, dict[str, str]]:
     return url, headers
 
 
+def resolve_sap_signer(configured: Path | None) -> Path:
+    candidates: list[Path] = []
+    if configured is not None:
+        candidates.append(configured)
+    if value := os.environ.get("APPLE_MUSIC_SAP_SIGNER"):
+        candidates.append(Path(value))
+    candidates.extend(
+        [
+            Path(__file__).resolve().parent / "sapsigner.exe",
+            Path(os.environ.get("LOCALAPPDATA", ""))
+            / "Signum" / "resources" / "apple-tools" / "windows-x64"
+            / "v3-legacy" / "sapsigner.exe",
+            Path(os.environ.get("LOCALAPPDATA", ""))
+            / "Signum" / "resources" / "apple-tools" / "windows-x64"
+            / "v2" / "sapsigner.exe",
+        ]
+    )
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if candidate.is_file():
+            return candidate
+    raise ValueError(
+        "sapsigner.exe was not found; pass --sap-signer or set APPLE_MUSIC_SAP_SIGNER"
+    )
+
+
+def sign_body(signer: Path, body: bytes, timeout: int) -> bytes:
+    result = subprocess.run(
+        [str(signer)],
+        input=body,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=signer.parent,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"SAP signer failed with exit {result.returncode}: {message}")
+    if not result.stdout:
+        raise RuntimeError("SAP signer returned an empty signature")
+    return result.stdout
+
+
+def refresh_revision(
+    session: requests.Session,
+    flow: http.HTTPFlow,
+    signer: Path,
+    timeout: int,
+) -> tuple[int, dict[str, Any]]:
+    body = flow.request.raw_content or b""
+    excluded = {"host", "content-length", "accept-encoding", "connection", "x-apple-actionsignature"}
+    headers = {
+        name: value
+        for name, value in flow.request.headers.items()
+        if name.lower() not in excluded and not name.startswith(":")
+    }
+    signature = sign_body(signer, body, timeout)
+    headers["X-Apple-ActionSignature"] = base64.b64encode(signature).decode("ascii")
+    headers["Accept-Encoding"] = "identity"
+    response = session.request(
+        flow.request.method,
+        flow.request.pretty_url,
+        headers=headers,
+        data=body,
+        timeout=timeout,
+    )
+    parsed = parse_dmap(response.content)
+    statuses = find_values(parsed, "mstt")
+    revisions = find_values(parsed, "musr")
+    if response.status_code != 200 or not revisions:
+        raise RuntimeError(
+            f"Cloud Library revision refresh failed: HTTP {response.status_code}, "
+            f"statuses={statuses}, revisions={revisions}"
+        )
+    return revisions[-1], {
+        "http_status": response.status_code,
+        "response_length": len(response.content),
+        "server_statuses": statuses,
+        "revision": revisions[-1],
+        "signature_length": len(signature),
+    }
+
+
+def verify_cloud_items(
+    session: requests.Session,
+    flow: http.HTTPFlow,
+    signer: Path,
+    revision: int,
+    delta: int,
+    expected: dict[int, int],
+    timeout: int,
+) -> dict[str, Any]:
+    split = urlsplit(flow.request.pretty_url)
+    base_path = split.path.split("/daap/", 1)[0]
+    url = urlunsplit((split.scheme, split.netloc, base_path + "/daap/databases/1/items", "", ""))
+    body = (
+        f"session-id=0&revision-number={revision}&delta={delta}&type=music&meta=all"
+    ).encode("ascii")
+    excluded = {"host", "content-length", "content-type", "accept-encoding", "connection", "x-apple-actionsignature"}
+    headers = {
+        name: value
+        for name, value in flow.request.headers.items()
+        if name.lower() not in excluded and not name.startswith(":")
+    }
+    signature = sign_body(signer, body, timeout)
+    headers["X-Apple-ActionSignature"] = base64.b64encode(signature).decode("ascii")
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    headers["Accept-Encoding"] = "identity"
+    response = session.post(url, headers=headers, data=body, timeout=timeout)
+    parsed = parse_dmap(response.content)
+    returned: dict[int, int] = {}
+
+    def walk(nodes: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+        for node in nodes:
+            yield node
+            yield from walk(node.get("children", []))
+
+    for node in walk(parsed):
+        if node.get("tag") != "mlit":
+            continue
+        cloud_ids = find_values(node.get("children", []), "miid")
+        compilation_values = find_values(node.get("children", []), "asco")
+        if cloud_ids and compilation_values:
+            returned[cloud_ids[0]] = compilation_values[-1]
+
+    matched = {cloud_id: returned[cloud_id] for cloud_id in expected if cloud_id in returned}
+    mismatches = {
+        str(cloud_id): {"expected": expected[cloud_id], "actual": actual}
+        for cloud_id, actual in matched.items()
+        if expected[cloud_id] != actual
+    }
+    missing = sorted(set(expected) - set(matched))
+    return {
+        "http_status": response.status_code,
+        "response_length": len(response.content),
+        "revision": revision,
+        "delta": delta,
+        "returned_item_count": len(returned),
+        "expected_item_count": len(expected),
+        "matched_item_count": len(matched),
+        "missing_cloud_miids": missing,
+        "mismatches": mismatches,
+        "signature_length": len(signature),
+        "verified": response.status_code == 200 and not missing and not mismatches,
+    }
+
+
 def send_phase(
     session: requests.Session,
     url: str,
     headers: dict[str, str],
     revision: int,
     values: list[tuple[int, int]],
+    signer: Path,
     timeout: int,
 ) -> tuple[int, dict[str, Any]]:
     body = edit_body(revision, values)
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            response = session.post(url, headers=headers, data=body, timeout=timeout)
+            signed_headers = dict(headers)
+            signature = sign_body(signer, body, timeout)
+            signed_headers["X-Apple-ActionSignature"] = base64.b64encode(signature).decode("ascii")
+            response = session.post(url, headers=signed_headers, data=body, timeout=timeout)
             parsed = parse_dmap(response.content)
             statuses = find_values(parsed, "mstt")
             revisions = find_values(parsed, "musr")
@@ -215,6 +369,7 @@ def send_phase(
                     "revision_before": revision,
                     "revision_after": revisions[0],
                     "attempt": attempt,
+                    "signature_length": len(signature),
                 }
             raise RuntimeError(
                 f"edit rejected: HTTP {response.status_code}, statuses={statuses}, revisions={revisions}"
@@ -234,11 +389,21 @@ def main() -> int:
     parser.add_argument("transaction", type=Path, help="JSON report from musicdb_duplicate_repair.py")
     parser.add_argument("capture", type=Path, help="Recent mitmproxy capture containing authenticated /update")
     parser.add_argument("--album", action="append", help="Sync only an exact album title; repeatable")
+    parser.add_argument(
+        "--exclude-album",
+        action="append",
+        help="Exclude an exact album title; repeatable",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--proxy", default="direct", help="Proxy URL, or 'direct' for direct HTTPS")
     parser.add_argument("--ca", type=Path, default=Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument(
+        "--sap-signer",
+        type=Path,
+        help="Path to a Windows sapsigner.exe compatible with Apple SAP signing",
+    )
     args = parser.parse_args()
 
     transaction = json.loads(args.transaction.read_text(encoding="utf-8"))
@@ -249,13 +414,21 @@ def main() -> int:
         desired = {name: value for name, value in desired.items() if name in selected}
         if not items:
             raise ValueError("album filter matched no repaired items")
+    if args.exclude_album:
+        excluded_albums = set(args.exclude_album)
+        items = [item for item in items if item["album"] not in excluded_albums]
+        desired = {name: value for name, value in desired.items() if name not in excluded_albums}
+        if not items:
+            raise ValueError("album exclusion removed every repaired item")
     flow, revision = latest_library_context(args.capture)
     url, headers = request_context(flow)
     report: dict[str, Any] = {
         "mode": "apply" if args.apply else "dry_run",
         "item_count": len(items),
         "album_count": len(desired),
+        "captured_revision": revision,
         "initial_revision": revision,
+        "revision_refresh": None,
         "items": [
             {
                 "album": item["album"],
@@ -268,10 +441,13 @@ def main() -> int:
         ],
         "phase_one": None,
         "phase_two": None,
+        "verification_revision_refresh": None,
+        "verification": None,
         "final_revision": None,
     }
 
     if args.apply:
+        signer = resolve_sap_signer(args.sap_signer)
         session = requests.Session()
         if args.proxy.lower() == "direct":
             session.trust_env = False
@@ -281,21 +457,40 @@ def main() -> int:
                 raise ValueError(f"mitmproxy CA file not found: {args.ca}")
             session.proxies.update({"http": args.proxy, "https": args.proxy})
             session.verify = str(args.ca)
+        revision, report["revision_refresh"] = refresh_revision(
+            session, flow, signer, args.timeout
+        )
+        report["initial_revision"] = revision
         phase_one = [(item["cloud_miid"], 0 if item["desired_asco"] else 1) for item in items]
         revision, report["phase_one"] = send_phase(
-            session, url, headers, revision, phase_one, args.timeout
+            session, url, headers, revision, phase_one, signer, args.timeout
         )
         phase_two = [(item["cloud_miid"], item["desired_asco"]) for item in items]
         revision, report["phase_two"] = send_phase(
-            session, url, headers, revision, phase_two, args.timeout
+            session, url, headers, revision, phase_two, signer, args.timeout
         )
         report["final_revision"] = revision
+        verification_revision, report["verification_revision_refresh"] = refresh_revision(
+            session, flow, signer, args.timeout
+        )
+        expected = {item["cloud_miid"]: item["desired_asco"] for item in items}
+        report["verification"] = verify_cloud_items(
+            session,
+            flow,
+            signer,
+            verification_revision,
+            report["initial_revision"],
+            expected,
+            args.timeout,
+        )
 
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+    if args.apply and not report["verification"]["verified"]:
+        return 2
     return 0
 
 

@@ -82,9 +82,38 @@ Stop Apple Music and `AMPLibraryAgent`, restore the complete backed-up `.musicli
 
 ## Cloud Library status
 
-The local database repair is implemented. Automatic Cloud Library propagation is not complete yet.
+Cloud Library propagation is available on Windows through `tools/sync_repaired_albums.py`. It uses a compatible `sapsigner.exe` to generate a fresh `X-Apple-ActionSignature` for every request. The signer is not included in this repository.
 
-Apple's `/edit` endpoint requires an `X-Apple-ActionSignature` generated for the exact request. Reusing a signature from another request is rejected. Until the project can invoke Apple Music's own signed edit path, use the fixer for local repair and verify cloud behavior separately.
+The sync tool needs:
+
+- the same clean pre-repair database used to create the repair;
+- the JSON transaction report from `musicdb_duplicate_repair.py`;
+- a recent mitmproxy capture containing an authenticated Apple Music `/update` request;
+- a Windows SAP signer compatible with Apple's `X-Apple-ActionSignature` format.
+
+Preview the exact tracks and Cloud Library IDs first:
+
+```powershell
+uv run --python 3.12 .\tools\sync_repaired_albums.py `
+  '.\backups\pre-repair\Library.musicdb' `
+  '.\reports\repair-transaction.json' `
+  '.\captures\recent-sync.mitm' `
+  --report '.\reports\cloud-sync-plan.json'
+```
+
+Apply the cloud repair only after reviewing that plan:
+
+```powershell
+uv run --python 3.12 .\tools\sync_repaired_albums.py `
+  '.\backups\pre-repair\Library.musicdb' `
+  '.\reports\repair-transaction.json' `
+  '.\captures\recent-sync.mitm' `
+  --apply `
+  --sap-signer 'C:\path\to\sapsigner.exe' `
+  --report '.\reports\cloud-sync-result.json'
+```
+
+The tool reads a fresh cloud revision, temporarily flips the compilation field on the repaired tracks, restores the intended value in a second signed request, and downloads the resulting `/items` delta. It reports success only when every target Cloud Library ID is present with the expected final value. Use `--album 'Exact album title'` or `--exclude-album 'Exact album title'` to limit a run.
 
 Protocol notes, capture instructions, and the current cloud-sync work are documented in [research/README.md](research/README.md).
 

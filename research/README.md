@@ -20,7 +20,7 @@ The tested failure created multiple local `iama` album records with identical vi
 
 The production repairer reproduces the local structural change while leaving uncertain duplicate groups untouched.
 
-## Current cloud-sync result
+## Cloud-sync result
 
 The local repair mapped all 50 changed local track IDs in the test library to unique Cloud Library `miid` values. The corresponding DMAP body uses:
 
@@ -36,13 +36,27 @@ mebs
       asco  compilation value
 ```
 
-Direct `/edit` replay was rejected with HTTP 500. Cloud Library stayed at revision `20002495`, so no partial remote mutation occurred.
+The first direct `/edit` replay was rejected with HTTP 500 because it reused a captured signature. Cloud Library stayed at revision `20002495`, so that attempt caused no partial remote mutation.
 
-The request includes `X-Apple-ActionSignature`. Captures show that the value differs between `/update` and `/edit`; copying an authenticated header set from a nearby request does not work. The leading hypotheses are:
+The request includes `X-Apple-ActionSignature`. Captures show that Apple Music produces a unique 676-character Base64 value for every signed request. Its decoded representation is 507 bytes. A captured signature cannot be reused for a different body.
 
-1. the signature covers the HTTP method, path, body, timestamp, and account/session context;
-2. it is generated inside Apple Music's networking stack or `AMPLibraryAgent.exe` immediately before dispatch;
-3. invoking the official Library Agent command path is more reliable than recreating the encoder and key handling.
+Apple's SAP signer accepts the exact request body and produces a fresh signature. A Windows `sapsigner.exe` implementation was tested offline first, then against the read-only Cloud Library `/update` endpoint. Its 501-byte signature was accepted with HTTP 200 even though Apple Music's native Windows signer emits 507 bytes.
+
+The signed repair then succeeded:
+
+- `Branch`: 2 Cloud Library items, revision `20002497` to `20002499` across the two phases;
+- remaining 22 albums: 48 items, revision `20002499` to `20002501`;
+- final readback at revision `20002503`: all 50 target `miid` values were present in the `/items` delta, all 50 had the expected `asco`, with zero missing values and zero mismatches.
+
+This proves that the cloud mutation can be performed without reproducing Apple's private cryptography. The repairer signs each exact DMAP body through the SAP helper, sends the edit, checks the returned revision, and verifies the final `/items` delta.
+
+## Web MusicKit and Mescal
+
+The Apple Music web player exposes a developer JWT and a per-user media token. These are sufficient for the public `api.music.apple.com/v1/me/...` library operations, but the public API does not expose the album-compilation metadata edit needed for this repair.
+
+The useful reference is [dado3212/apple-podcast-transcript-downloader](https://github.com/dado3212/apple-podcast-transcript-downloader). On macOS it asks `AMSMescal` to serialize selected URL/query/header fields and then calls `AMSMescalSession.signData`. This confirms that request canonicalization and SAP signing are separate stages.
+
+For the Cloud Library DAAP endpoints tested here, Apple accepts an SAP signature over the exact HTTP body. The Windows helper used by [pdx15/ipatool-webGUI](https://github.com/pdx15/ipatool-webGUI) and the independently documented [lbr77/sap-unicorn](https://github.com/lbr77/sap-unicorn) follow the same model: establish a SAP session once, then sign arbitrary payload bytes locally. The private signing material stays inside Apple's FairPlay implementation rather than being exported as a reusable key.
 
 ## Library Agent interface
 
@@ -65,7 +79,7 @@ SendDBChangesToLibraryAsync
 FetchLibraryFromRevsionAsync
 ```
 
-External clients can register and read the Music domain. The remaining work is to reproduce the Media App lifecycle and send a documented `SetProperties` command so Library Agent creates its normal change journal and signs the resulting `/edit` request.
+External clients can register and read the Music domain. Reproducing the Media App lifecycle and the `SetProperties` command remains useful for a future capture-free workflow, but it is no longer required for cloud propagation because body signing now works directly.
 
 The command packer uses the keys `command-id` and `command-params`. `SetProperties` expects database identifiers, property IDs, and serialized property values. Its exact parameter encoding is still being decoded.
 
