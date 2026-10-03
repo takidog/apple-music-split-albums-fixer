@@ -1,72 +1,98 @@
-# Apple Music split album research tools
+# Apple Music Split Albums Fixer
 
-Read-only tools for studying split album records and Cloud Library synchronization in Apple Music for Windows. The main tool scans a clean copy of `Library.musicdb` locally and reports album objects with matching visible metadata that are referenced by separate sets of tracks.
+A Windows tool for finding and repairing Apple Music albums that have been split into two or more local album records.
 
-The scanner does not contact Apple, change the database, or generate write requests. Capture and local-first synchronization helpers are experimental and intended for controlled testing.
+This can happen when Apple Music resolves localized metadata inconsistently. Tracks from one release may end up attached to separate album objects even though the visible album title, album artist, and artist are the same. The result looks like multiple partial albums in the library.
 
-## Scan a library copy
+## Platform and requirements
 
-Close Apple Music before making a consistent copy of the library. Then run the scanner against the copy:
+- Windows 10 or Windows 11
+- Apple Music for Windows
+- [uv](https://docs.astral.sh/uv/) for running the standalone Python scripts
+
+The Python dependencies are declared inside each script and are installed by `uv` when needed.
+
+## How it works
+
+The fixer works on a clean, offline copy of `Library.musicdb`:
+
+1. It validates the `hfma` database envelope.
+2. It decrypts the AES-128 ECB prefix and decompresses the zlib payload.
+3. It parses every `itma` track record and `iama` album record.
+4. It groups album objects by normalized title, album artist, and artist.
+5. It marks a group as safe to merge only when one album object has a unique majority of tracks, track numbers do not overlap, and the combined track sequence is contiguous.
+6. It reassigns outlier tracks to the majority album object and removes the unused duplicate album records.
+7. It updates the affected record counts, section lengths, timestamps, and outer database envelope.
+8. It encrypts the repaired database and parses it again to confirm that every selected split is gone and all tracks remain readable.
+
+Groups with ties, overlapping track numbers, missing track numbers, or other uncertain structure are reported as `ambiguous_duplicate` and are never repaired automatically.
+
+## Back up the library
+
+Quit both Apple Music and `AMPLibraryAgent` before copying the library. Back up the complete directory rather than only the database file:
+
+```text
+%USERPROFILE%\Music\Apple Music\Apple Music Library.musiclibrary
+```
+
+Keep this backup until the repaired library has been opened, restarted, and checked.
+
+## Scan for split albums
+
+Run the read-only scanner against the copied database:
 
 ```powershell
 uv run --python 3.12 .\tools\musicdb_duplicate_scanner.py `
-  '.\backups\Library.musicdb' `
+  '.\backups\pre-repair\Library.musicdb' `
   --json '.\reports\duplicate-albums.json' `
   --markdown '.\reports\duplicate-albums.md'
 ```
 
-The scanner reads the `hfma` envelope, decrypts the AES-128 ECB prefix, decompresses the zlib payload, and parses track and album records. It groups album objects by normalized title, album artist, and artist, then compares the album IDs referenced by tracks.
+The JSON report contains the full record and track mapping. The Markdown report is easier to review manually. The scanner never writes to the database.
 
-Groups with matching metadata, one unique majority album ID, non-overlapping track numbers, and a contiguous combined sequence are labeled `likely_split_album`. Other duplicate groups are labeled `ambiguous_duplicate` for review. Suggested track-reference changes are informational only; `writes_generated` is always zero.
+## Preview a repair
 
-## Capture Apple Music traffic
-
-Install mitmproxy and ensure `mitmweb.exe` is on `PATH`. Start a process-scoped capture from PowerShell:
+The repair command is a dry run unless `--apply` is supplied:
 
 ```powershell
-.\tools\start-capture.ps1 -Label 'startup' -TargetText 'Album title'
+uv run --python 3.12 .\tools\musicdb_duplicate_repair.py `
+  '.\backups\pre-repair\Library.musicdb' `
+  --report '.\reports\repair-dry-run.json'
 ```
 
-The capture targets the Apple Music app and its library agent using mitmproxy local capture mode. The web interface listens locally at `http://127.0.0.1:8081/`. Set `MITMWEB_PASSWORD` in the environment before starting if the local web interface needs a password.
+Use `--album 'Exact album title'` one or more times to restrict the plan to selected albums.
 
-Stop the capture and build a summary:
+## Create a repaired database
+
+Writing requires both `--apply` and a separate `--output` path. The input file cannot be overwritten:
 
 ```powershell
-.\tools\stop-capture.ps1
-.\tools\build-report.ps1 -Label 'startup'
+uv run --python 3.12 .\tools\musicdb_duplicate_repair.py `
+  '.\backups\pre-repair\Library.musicdb' `
+  --apply `
+  --output '.\work\Library.repaired.musicdb' `
+  --report '.\reports\repair-transaction.json'
 ```
 
-The observer redacts most header and query values in its JSONL index. Raw `.mitm` captures can contain authentication tokens, library identifiers, and private metadata. Keep them local and never attach unredacted captures to public issues.
+Review the transaction report before installing the repaired file. Stop Apple Music and `AMPLibraryAgent`, replace `Library.musicdb` with the repaired output, then start Apple Music and run the scanner once more against a new clean copy.
 
-## Local-first capture mode
+## Roll back
 
-For controlled testing, `-HoldLibraryWrites` intercepts requests to the observed Cloud Library `/edit` endpoint and returns a temporary `503` while leaving other traffic flowing. This can allow a local change to be observed before allowing the library agent to retry its cloud write.
+Stop Apple Music and `AMPLibraryAgent`, restore the complete backed-up `.musiclibrary` directory, and start Apple Music again.
 
-```powershell
-.\tools\start-capture.ps1 `
-  -Label 'local-first' `
-  -TargetText 'Album title' `
-  -HoldLibraryWrites
-```
+## Cloud Library status
 
-After reviewing the local result, release the hold while the capture remains active:
+The local database repair is implemented. Automatic Cloud Library propagation is not complete yet.
 
-```powershell
-.\tools\release-library-writes.ps1
-```
+Apple's `/edit` endpoint requires an `X-Apple-ActionSignature` generated for the exact request. Reusing a signature from another request is rejected. Until the project can invoke Apple Music's own signed edit path, use the fixer for local repair and verify cloud behavior separately.
 
-Keep the capture running until the write and following library delta are observed, then stop it. This mode is experimental; a held write may be retried or reported as failed by Apple Music. Back up the library before testing and verify the resulting cloud state afterward.
+Protocol notes, capture instructions, and the current cloud-sync work are documented in [research/README.md](research/README.md).
 
-## Other tools
+## Safety rules
 
-- `tools/export_sync_details.py` exports structural details from Cloud Library flows while hashing/redacting most values.
-- `tools/plan_compilation_repairs.py` proposes outlier compilation values from an exported `/items` delta. It is read-only and generates no API writes.
-- `tools/mark-event.ps1` records a timestamped manual action marker.
+- Never work on the live database while Apple Music is running.
+- Always keep a complete rollback copy.
+- Review `ambiguous_duplicate` groups manually.
+- Treat raw traffic captures as private because they can contain account tokens and library identifiers.
 
-See [the research method](docs/RESEARCH_METHOD.md) for evidence and interpretation guidelines.
-
-## Scope and disclaimer
-
-This project studies possible localization and library-object causes of split albums. Similar symptoms can also result from different album editions, compilation settings, or inconsistent tags. A scan is diagnostic evidence, not proof that duplicate objects should be merged.
-
-This is an independent interoperability research project and is not affiliated with or endorsed by Apple Inc. Apple Music, iTunes, and related names are trademarks of their respective owners.
+This is an independent interoperability project and is not affiliated with Apple Inc. Apple Music and related names are trademarks of their respective owners.

@@ -8,7 +8,8 @@ $ErrorActionPreference = 'Stop'
 $researchRoot = Split-Path -Parent $PSScriptRoot
 $mitmwebCommand = Get-Command mitmweb.exe -ErrorAction SilentlyContinue
 if (-not $mitmwebCommand) { $mitmwebCommand = Get-Command mitmweb -ErrorAction SilentlyContinue }
-$mitmweb = if ($mitmwebCommand) { $mitmwebCommand.Source } else { $null }
+$bundledMitmweb = 'C:\Program Files\mitmproxy\bin\mitmweb.exe'
+$mitmweb = if ($mitmwebCommand) { $mitmwebCommand.Source } elseif (Test-Path -LiteralPath $bundledMitmweb) { $bundledMitmweb } else { $null }
 $addon = Join-Path $PSScriptRoot 'apple_music_observer.py'
 $captureFile = Join-Path $researchRoot "captures\$Label.mitm"
 $stdoutFile = Join-Path $researchRoot "observations\$Label.mitmweb.stdout.log"
@@ -17,7 +18,7 @@ $pidFile = Join-Path $researchRoot 'observations\active-capture.json'
 $writeHoldFile = Join-Path $researchRoot 'observations\library-write-hold.enabled'
 
 if (-not $mitmweb -or -not (Test-Path -LiteralPath $mitmweb)) {
-    throw 'mitmweb was not found on PATH. Install mitmproxy and reopen PowerShell.'
+    throw 'mitmweb was not found on PATH or at C:\Program Files\mitmproxy\bin\mitmweb.exe.'
 }
 if (Test-Path -LiteralPath $pidFile) {
     $active = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
