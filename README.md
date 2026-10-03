@@ -1,5 +1,7 @@
 # Apple Music Split Albums Fixer
 
+[繁體中文](README_zh.md)
+
 A Python CLI for finding and repairing albums that Apple Music has split into multiple local album records. The current release supports Apple Music for Windows.
 
 The main command scans the current library, lists only high-confidence repairs, lets you select albums by number, creates a complete rollback backup, repairs the local database, and synchronizes the selected changes to Cloud Library.
