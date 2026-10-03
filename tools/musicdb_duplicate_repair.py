@@ -67,31 +67,35 @@ def find_numeric_boma(payload: bytes, sections: list[Any], track_section: Any) -
     return None
 
 
+def plan_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Convert one high-confidence scanner result into a repair operation."""
+    if candidate["classification"] != "likely_split_album":
+        raise ValueError("only high-confidence split albums can be repaired")
+    survivor = candidate["suggested_survivor_album_id"]
+    remove_ids = [
+        variant["album_id"]
+        for variant in candidate["variants"]
+        if variant["album_id"] != survivor
+    ]
+    return {
+        "album": candidate["album"],
+        "album_artist": candidate["album_artist"],
+        "artist": candidate["artist"],
+        "survivor_album_id": survivor,
+        "survivor_album_id_hex": candidate["suggested_survivor_album_id_hex"],
+        "remove_album_ids": remove_ids,
+        "remove_album_ids_hex": [f"0x{value:016X}" for value in remove_ids],
+        "tracks_to_reassign": candidate["outlier_tracks"],
+    }
+
+
 def build_plan(scan: dict[str, Any], selected_albums: set[str] | None) -> list[dict[str, Any]]:
-    plan = []
-    for candidate in scan["candidates"]:
-        if candidate["classification"] != "likely_split_album":
-            continue
-        if selected_albums and candidate["album"] not in selected_albums:
-            continue
-        survivor = candidate["suggested_survivor_album_id"]
-        remove_ids = [
-            variant["album_id"]
-            for variant in candidate["variants"]
-            if variant["album_id"] != survivor
-        ]
-        plan.append(
-            {
-                "album": candidate["album"],
-                "album_artist": candidate["album_artist"],
-                "survivor_album_id": survivor,
-                "survivor_album_id_hex": candidate["suggested_survivor_album_id_hex"],
-                "remove_album_ids": remove_ids,
-                "remove_album_ids_hex": [f"0x{value:016X}" for value in remove_ids],
-                "tracks_to_reassign": candidate["outlier_tracks"],
-            }
-        )
-    return plan
+    return [
+        plan_candidate(candidate)
+        for candidate in scan["candidates"]
+        if candidate["classification"] == "likely_split_album"
+        and (not selected_albums or candidate["album"] in selected_albums)
+    ]
 
 
 def repair_payload(payload: bytes, plan: list[dict[str, Any]]) -> tuple[bytes, dict[str, Any]]:
@@ -125,6 +129,8 @@ def repair_payload(payload: bytes, plan: list[dict[str, Any]]) -> tuple[bytes, d
             changed_tracks.append(
                 {
                     "album": item["album"],
+                    "album_artist": item.get("album_artist"),
+                    "artist": item.get("artist"),
                     "persistent_id": track_id,
                     "persistent_id_hex": f"0x{track_id:016X}",
                     "title": track.get("title"),

@@ -108,7 +108,10 @@ def latest_library_context(capture: Path) -> tuple[http.HTTPFlow, int]:
     return revision_flow, revisions[-1]
 
 
-def cloud_ids(database: Path, transaction: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def cloud_ids(
+    database: Path,
+    transaction: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], int]]:
     _, payload = decode_musicdb(database)
     sections = read_sections(payload)
     tracks = read_tracks(payload, sections)
@@ -119,12 +122,22 @@ def cloud_ids(database: Path, transaction: dict[str, Any]) -> tuple[list[dict[st
         for section in sections
         if section.tag == "itma" and section.length >= 228
     }
-    candidates = {item["album"]: item for item in scan["candidates"]}
-    desired_by_album: dict[str, int] = {}
+    desired_by_album: dict[tuple[str, str], int] = {}
+    repair_keys_by_title: dict[str, list[tuple[str, str]]] = {}
     for repair in transaction["plan"]:
-        candidate = candidates.get(repair["album"])
-        if candidate is None:
+        matches = [
+            item
+            for item in scan["candidates"]
+            if item["album"] == repair["album"]
+            and (
+                repair.get("album_artist") is None
+                or item.get("album_artist") == repair.get("album_artist")
+            )
+            and (repair.get("artist") is None or item.get("artist") == repair.get("artist"))
+        ]
+        if len(matches) != 1:
             raise ValueError(f"album is missing from source scan: {repair['album']}")
+        candidate = matches[0]
         values = [
             track["compilation"]
             for variant in candidate["variants"]
@@ -134,10 +147,21 @@ def cloud_ids(database: Path, transaction: dict[str, Any]) -> tuple[list[dict[st
         desired, count = counts.most_common(1)[0]
         if sum(1 for value in counts.values() if value == count) > 1:
             raise ValueError(f"compilation value is tied for album: {repair['album']}")
-        desired_by_album[repair["album"]] = desired
+        key = (repair["album"], repair.get("album_artist") or "")
+        desired_by_album[key] = desired
+        repair_keys_by_title.setdefault(repair["album"], []).append(key)
 
     items: list[dict[str, Any]] = []
     for changed in transaction["changed_tracks"]:
+        if changed.get("album_artist") is not None:
+            repair_key = (changed["album"], changed.get("album_artist") or "")
+        else:
+            title_keys = repair_keys_by_title.get(changed["album"], [])
+            if len(title_keys) != 1:
+                raise ValueError(
+                    f"album artist is required to disambiguate: {changed['album']}"
+                )
+            repair_key = title_keys[0]
         track_id = changed["persistent_id"]
         section = track_sections.get(track_id)
         if section is None:
@@ -148,10 +172,11 @@ def cloud_ids(database: Path, transaction: dict[str, Any]) -> tuple[list[dict[st
         items.append(
             {
                 "album": changed["album"],
+                "album_artist": repair_key[1],
                 "title": changed.get("title"),
                 "local_persistent_id": track_id,
                 "cloud_miid": cloud_id,
-                "desired_asco": desired_by_album[changed["album"]],
+                "desired_asco": desired_by_album[repair_key],
             }
         )
     if len({item["cloud_miid"] for item in items}) != len(items):
@@ -411,13 +436,15 @@ def main() -> int:
     if args.album:
         selected = set(args.album)
         items = [item for item in items if item["album"] in selected]
-        desired = {name: value for name, value in desired.items() if name in selected}
+        desired = {key: value for key, value in desired.items() if key[0] in selected}
         if not items:
             raise ValueError("album filter matched no repaired items")
     if args.exclude_album:
         excluded_albums = set(args.exclude_album)
         items = [item for item in items if item["album"] not in excluded_albums]
-        desired = {name: value for name, value in desired.items() if name not in excluded_albums}
+        desired = {
+            key: value for key, value in desired.items() if key[0] not in excluded_albums
+        }
         if not items:
             raise ValueError("album exclusion removed every repaired item")
     flow, revision = latest_library_context(args.capture)
@@ -432,6 +459,7 @@ def main() -> int:
         "items": [
             {
                 "album": item["album"],
+                "album_artist": item["album_artist"],
                 "title": item["title"],
                 "local_persistent_id_hex": f"0x{item['local_persistent_id']:016X}",
                 "cloud_miid": item["cloud_miid"],

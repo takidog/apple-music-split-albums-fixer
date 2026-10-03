@@ -1,127 +1,140 @@
 # Apple Music Split Albums Fixer
 
-A Windows tool for finding and repairing Apple Music albums that have been split into two or more local album records.
+A Python CLI for finding and repairing albums that Apple Music has split into multiple local album records. The current release supports Apple Music for Windows.
 
-This can happen when Apple Music resolves localized metadata inconsistently. Tracks from one release may end up attached to separate album objects even though the visible album title, album artist, and artist are the same. The result looks like multiple partial albums in the library.
+The main command scans the current library, lists only high-confidence repairs, lets you select albums by number, creates a complete rollback backup, repairs the local database, and synchronizes the selected changes to Cloud Library.
 
-## Platform and requirements
+## Requirements
 
 - Windows 10 or Windows 11
 - Apple Music for Windows
-- [uv](https://docs.astral.sh/uv/) for running the standalone Python scripts
+- [uv](https://docs.astral.sh/uv/)
+- for cloud synchronization, a recent authenticated mitmproxy capture and a compatible `sapsigner.exe`
 
-The Python dependencies are declared inside each script and are installed by `uv` when needed.
+Python packages are declared inside the scripts and installed automatically by `uv`.
 
-## How it works
+## Interactive repair
 
-The fixer works on a clean, offline copy of `Library.musicdb`:
+From the project directory, run:
 
-1. It validates the `hfma` database envelope.
-2. It decrypts the AES-128 ECB prefix and decompresses the zlib payload.
-3. It parses every `itma` track record and `iama` album record.
-4. It groups album objects by normalized title, album artist, and artist.
-5. It marks a group as safe to merge only when one album object has a unique majority of tracks, track numbers do not overlap, and the combined track sequence is contiguous.
-6. It reassigns outlier tracks to the majority album object and removes the unused duplicate album records.
-7. It updates the affected record counts, section lengths, timestamps, and outer database envelope.
-8. It encrypts the repaired database and parses it again to confirm that every selected split is gone and all tracks remain readable.
+```powershell
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py
+```
 
-Groups with ties, overlapping track numbers, missing track numbers, or other uncertain structure are reported as `ambiguous_duplicate` and are never repaired automatically.
-
-## Back up the library
-
-Quit both Apple Music and `AMPLibraryAgent` before copying the library. Back up the complete directory rather than only the database file:
+The tool automatically finds the normal Windows library location and prints entries such as:
 
 ```text
-%USERPROFILE%\Music\Apple Music\Apple Music Library.musiclibrary
+Found 3 high-confidence split album(s):
+
+[ 1] Branch — やなぎなぎ | 2 parts, 4 tracks, move 1
+[ 2] Follow My Tracks — やなぎなぎ | 2 parts, 14 tracks, move 2
+[ 3] Green Light — やなぎなぎ | 2 parts, 4 tracks, move 1
+
+Select album numbers (example: 1,3-5) or type all:
 ```
 
-Keep this backup until the repaired library has been opened, restarted, and checked.
+After selection it:
 
-## Scan for split albums
+1. validates the cloud capture and signer before changing the library;
+2. closes Apple Music only after asking;
+3. scans the stopped database again so the plan cannot use stale record IDs;
+4. backs up the complete `.musiclibrary` directory;
+5. repairs and parses a new database before installing it;
+6. installs the validated database atomically;
+7. sends signed Cloud Library edits for only the selected tracks;
+8. reads the cloud delta and reports how many records matched, were missing, or differed.
 
-Run the read-only scanner against the copied database:
+The default backup and report directory is:
+
+```text
+%USERPROFILE%\Music\Apple Music Split Albums Fixer Backups\YYYYMMDD-HHMMSS
+```
+
+It contains the complete rollback copy, the local transaction report, the validated repaired database, and the cloud verification result.
+
+## Useful modes
+
+List current problems without writing anything:
 
 ```powershell
-uv run --python 3.12 .\tools\musicdb_duplicate_scanner.py `
-  '.\backups\pre-repair\Library.musicdb' `
-  --json '.\reports\duplicate-albums.json' `
-  --markdown '.\reports\duplicate-albums.md'
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py --list
 ```
 
-The JSON report contains the full record and track mapping. The Markdown report is easier to review manually. The scanner never writes to the database.
-
-## Preview a repair
-
-The repair command is a dry run unless `--apply` is supplied:
+Preview a selection without writing:
 
 ```powershell
-uv run --python 3.12 .\tools\musicdb_duplicate_repair.py `
-  '.\backups\pre-repair\Library.musicdb' `
-  --report '.\reports\repair-dry-run.json'
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py --select 1,3-5 --dry-run
 ```
 
-Use `--album 'Exact album title'` one or more times to restrict the plan to selected albums.
-
-## Create a repaired database
-
-Writing requires both `--apply` and a separate `--output` path. The input file cannot be overwritten:
+Repair every safe candidate and skip cloud synchronization:
 
 ```powershell
-uv run --python 3.12 .\tools\musicdb_duplicate_repair.py `
-  '.\backups\pre-repair\Library.musicdb' `
-  --apply `
-  --output '.\work\Library.repaired.musicdb' `
-  --report '.\reports\repair-transaction.json'
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py --all --local-only
 ```
 
-Review the transaction report before installing the repaired file. Stop Apple Music and `AMPLibraryAgent`, replace `Library.musicdb` with the repaired output, then start Apple Music and run the scanner once more against a new clean copy.
-
-## Roll back
-
-Stop Apple Music and `AMPLibraryAgent`, restore the complete backed-up `.musiclibrary` directory, and start Apple Music again.
-
-## Cloud Library status
-
-Cloud Library propagation is available on Windows through `tools/sync_repaired_albums.py`. It uses a compatible `sapsigner.exe` to generate a fresh `X-Apple-ActionSignature` for every request. The signer is not included in this repository.
-
-The sync tool needs:
-
-- the same clean pre-repair database used to create the repair;
-- the JSON transaction report from `musicdb_duplicate_repair.py`;
-- a recent mitmproxy capture containing an authenticated Apple Music `/update` request;
-- a Windows SAP signer compatible with Apple's `X-Apple-ActionSignature` format.
-
-Preview the exact tracks and Cloud Library IDs first:
+Supply the cloud inputs explicitly:
 
 ```powershell
-uv run --python 3.12 .\tools\sync_repaired_albums.py `
-  '.\backups\pre-repair\Library.musicdb' `
-  '.\reports\repair-transaction.json' `
-  '.\captures\recent-sync.mitm' `
-  --report '.\reports\cloud-sync-plan.json'
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py `
+  --capture '.\captures\recent-sync.mitm' `
+  --sap-signer 'C:\path\to\sapsigner.exe'
 ```
 
-Apply the cloud repair only after reviewing that plan:
+For automation, selection and consent must both be explicit:
 
 ```powershell
-uv run --python 3.12 .\tools\sync_repaired_albums.py `
-  '.\backups\pre-repair\Library.musicdb' `
-  '.\reports\repair-transaction.json' `
-  '.\captures\recent-sync.mitm' `
-  --apply `
-  --sap-signer 'C:\path\to\sapsigner.exe' `
-  --report '.\reports\cloud-sync-result.json'
+uv run --python 3.12 .\tools\apple_music_split_albums_fixer.py `
+  --select 1,2 `
+  --yes `
+  --stop-apps `
+  --restart `
+  --capture '.\captures\recent-sync.mitm' `
+  --sap-signer 'C:\path\to\sapsigner.exe'
 ```
 
-The tool reads a fresh cloud revision, temporarily flips the compilation field on the repaired tracks, restores the intended value in a second signed request, and downloads the resulting `/items` delta. It reports success only when every target Cloud Library ID is present with the expected final value. Use `--album 'Exact album title'` or `--exclude-album 'Exact album title'` to limit a run.
+Use `--database` for a nonstandard library location. The program searches for the newest `.mitm` file in the project `captures` directory when `--capture` is omitted. It searches for a signer passed through `--sap-signer`, the `APPLE_MUSIC_SAP_SIGNER` environment variable, `tools\sapsigner.exe`, and known Signum installation paths.
 
-Protocol notes, capture instructions, and the current cloud-sync work are documented in [research/README.md](research/README.md).
+`--offline-copy` is available for testing a detached database copy without stopping or starting Apple Music. Do not use it for the live library.
 
-## Safety rules
+## How the repair works
 
-- Never work on the live database while Apple Music is running.
-- Always keep a complete rollback copy.
-- Review `ambiguous_duplicate` groups manually.
-- Treat raw traffic captures as private because they can contain account tokens and library identifiers.
+Apple Music's `Library.musicdb` is an encrypted and compressed binary database. The fixer:
+
+1. validates the `hfma` envelope;
+2. decrypts the AES-128 ECB prefix and decompresses the zlib payload;
+3. parses every `itma` track and `iama` album record;
+4. groups album objects by normalized album title, album artist, and artist;
+5. marks a group safe only when one record has a unique majority, track numbers do not overlap, visible metadata is identical, and the combined sequence is contiguous;
+6. reassigns the outlier tracks to the majority album object and removes unused album records;
+7. updates record counts, section lengths, timestamps, and the outer envelope;
+8. encrypts and parses the result again before replacing the live file.
+
+Ties, overlapping or missing track numbers, and inconsistent metadata are reported as ambiguous and never offered for automatic repair.
+
+Cloud synchronization maps the changed local track IDs to their Cloud Library `miid` values from the pre-repair backup. Each request receives a fresh SAP `X-Apple-ActionSignature`. The tool temporarily flips the compilation field, restores the intended value in a second request, then downloads the resulting `/items` delta and verifies every target.
+
+## Rollback
+
+Close Apple Music and `AMPLibraryAgent`, then replace the current `.musiclibrary` directory with the `backup` directory from the relevant timestamped run. Keep the backup until the repaired library has survived an Apple Music restart and another device has confirmed the cloud result.
+
+## Advanced tools
+
+The lower-level scripts remain available for inspection and manual workflows:
+
+- `tools/musicdb_duplicate_scanner.py`: read-only JSON and Markdown scan reports;
+- `tools/musicdb_duplicate_repair.py`: create a repaired database at a separate output path;
+- `tools/sync_repaired_albums.py`: preview or apply a cloud transaction report.
+
+The scanner, repair planner, binary encoder, and cloud synchronizer are Python modules without Windows UI dependencies. A future macOS version can reuse them and add macOS database discovery and Music process control.
+
+Protocol details and reverse-engineering notes are kept in [research/README.md](research/README.md).
+
+## Safety
+
+- A live database is never repaired while Apple Music is running.
+- A complete rollback copy is created before installation.
+- Ambiguous duplicate groups are never changed automatically.
+- Raw traffic captures can contain account tokens and library identifiers; keep them private.
+- `sapsigner.exe` is an external component and is not distributed in this repository.
 
 This is an independent interoperability project and is not affiliated with Apple Inc. Apple Music and related names are trademarks of their respective owners.
