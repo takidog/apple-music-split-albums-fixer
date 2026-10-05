@@ -2,16 +2,15 @@
 
 [English](README.md)
 
-這是一個 Python CLI，用來找出並修復被 Apple Music 拆成多筆本機專輯紀錄的專輯。目前版本支援 Windows 版 Apple Music。
+這是一個 Python CLI，用來找出並修復被 Apple Music 拆成多筆本機專輯紀錄的專輯。目前版本支援 Windows 版 Apple Music，以及 macOS 版「音樂」App 的本機修復。
 
 主程式會掃描目前的音樂資料庫，只列出可信度高、能安全處理的候選項目，讓使用者用編號選擇專輯。執行修復時，它會建立完整的還原備份、修復本機資料庫，並將選中的變更同步到「雲端音樂資料庫」（Cloud Library）。
 
 ## 系統需求
 
-- Windows 10 或 Windows 11
-- Windows 版 Apple Music
+- Windows 10 或 Windows 11 搭配 Windows 版 Apple Music，或 macOS 搭配「音樂」App
 - [uv](https://docs.astral.sh/uv/)
-- 若要同步雲端，需要近期且已通過驗證的 mitmproxy 封包檔，以及相容的 `sapsigner.exe`
+- 若要同步雲端（僅限 Windows），需要近期且已通過驗證的 mitmproxy 封包檔，以及相容的 `sapsigner.exe`
 
 Python 相依套件已宣告在各個腳本內，`uv` 會在執行時自動安裝。
 
@@ -89,6 +88,18 @@ Select album numbers (example: 1,3-5) or type all:
 
 其中包含完整還原副本、本機修復交易報告、通過驗證的修復資料庫，以及雲端驗證結果。
 
+## macOS
+
+macOS 只支援本機資料庫修復，請一律加上 `--local-only`：
+
+```sh
+uv run --python 3.12 tools/apple_music_split_albums_fixer.py --local-only
+```
+
+工具會自動找到 `~/Music/Music/Music Library.musiclibrary/Library.musicdb`。寫入前會正常結束「音樂」App 並停止 `AMPLibraryAgent`，加上 `--restart` 則會在完成後重新開啟「音樂」。備份位於 `~/Music/Apple Music Split Albums Fixer Backups/YYYYMMDD-HHMMSS`。
+
+工具不會直接更新雲端音樂資料庫。修復時會像 Apple Music 本機編輯一樣標記被移動的曲目，但「音樂」是否會上傳這些變更尚未驗證。若有啟用 iCloud 音樂資料庫，請在幾天後到其他裝置確認專輯仍維持合併。
+
 ## 常用模式
 
 只列出目前的問題，不寫入任何資料：
@@ -145,7 +156,7 @@ Apple Music 的 `Library.musicdb` 是經過加密與壓縮的二進位資料庫�
 4. 根據正規化後的專輯名稱、專輯藝人及藝人名稱將專輯物件分組；
 5. 只有在其中一筆紀錄擁有唯一多數、曲目編號沒有重複、顯示資訊完全一致，而且合併後曲目編號連續時，才判定能安全修復；
 6. 將少數分支的曲目重新指向主要專輯物件，並移除不再使用的專輯紀錄；
-7. 更新紀錄數量、區段長度、時間戳與外層資料結構；
+7. 更新紀錄數量、區段長度、時間戳與外層資料結構（Apple Music 1.7 將 `hsma` 區段長度從偏移 8 移到 16，並在外層偏移 128 重複記錄檔案大小；兩種格式皆已處理）；
 8. 重新加密並再次解析結果，確認正確後才取代正式資料庫。
 
 若出現票數相同、曲目編號重複或缺漏、顯示資訊不一致等情況，工具會將其列為模糊候選，不提供自動修復。
@@ -164,7 +175,7 @@ Apple Music 的 `Library.musicdb` 是經過加密與壓縮的二進位資料庫�
 - `tools/musicdb_duplicate_repair.py`：將修復後的資料庫寫入另一個輸出路徑；
 - `tools/sync_repaired_albums.py`：預覽或套用雲端交易報告。
 
-掃描器、修復規劃器、二進位編碼器及雲端同步器都是不依賴 Windows UI 的 Python 模組。未來的 macOS 版本可以沿用這些模組，只需新增 macOS 資料庫定位及 Music 程序控制。
+掃描器、修復規劃器、二進位編碼器及雲端同步器都是不依賴 Windows UI 的 Python 模組。各平台的資料庫定位及 Music 程序控制位於 `tools/apple_music_split_albums_fixer.py`。
 
 協定細節與逆向研究筆記保存在 [research/README.md](research/README.md)。
 

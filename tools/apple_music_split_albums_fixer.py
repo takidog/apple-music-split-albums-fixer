@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,21 +55,20 @@ from sync_repaired_albums import (
 
 
 MUSIC_PROCESS_NAMES = {"applemusic.exe", "amplibraryagent.exe"}
+MACOS_MUSIC_PROCESS_NAMES = ["Music", "AMPLibraryAgent"]
 
 
 def default_database() -> Path:
-    if sys.platform != "win32":
-        raise ValueError("automatic database discovery is currently available on Windows only")
-    preferred = (
-        Path.home()
-        / "Music"
-        / "Apple Music"
-        / "Apple Music Library.musiclibrary"
-        / "Library.musicdb"
-    )
+    if sys.platform == "win32":
+        root = Path.home() / "Music" / "Apple Music"
+        preferred = root / "Apple Music Library.musiclibrary" / "Library.musicdb"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Music" / "Music"
+        preferred = root / "Music Library.musiclibrary" / "Library.musicdb"
+    else:
+        raise ValueError("automatic database discovery is available on Windows and macOS only")
     if preferred.is_file():
         return preferred
-    root = Path.home() / "Music" / "Apple Music"
     candidates = list(root.glob("*.musiclibrary/Library.musicdb")) if root.is_dir() else []
     if not candidates:
         raise ValueError("Library.musicdb was not found; pass --database")
@@ -165,6 +165,18 @@ def parse_selection(value: str, count: int) -> list[int]:
 
 
 def running_music_processes() -> list[tuple[int, str]]:
+    if sys.platform == "darwin":
+        rows: list[tuple[int, str]] = []
+        for name in MACOS_MUSIC_PROCESS_NAMES:
+            result = subprocess.run(
+                ["pgrep", "-x", "-U", str(os.getuid()), name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            rows.extend((int(pid), name) for pid in result.stdout.split())
+        return rows
     if sys.platform != "win32":
         return []
     result = subprocess.run(
@@ -188,6 +200,28 @@ def running_music_processes() -> list[tuple[int, str]]:
 
 
 def stop_music_processes(processes: list[tuple[int, str]]) -> None:
+    if sys.platform == "darwin":
+        # Quit Music normally so it flushes the library, then stop the agent.
+        if any(name == "Music" for _, name in processes):
+            subprocess.run(
+                ["osascript", "-e", 'quit app "Music"'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            for _ in range(40):
+                if not any(name == "Music" for _, name in running_music_processes()):
+                    break
+                time.sleep(0.25)
+        for process_id, name in running_music_processes():
+            if name != "Music":
+                subprocess.run(["kill", "-TERM", str(process_id)], check=False)
+        for _ in range(20):
+            if not running_music_processes():
+                return
+            time.sleep(0.25)
+        names = ", ".join(name for _, name in running_music_processes())
+        raise RuntimeError(f"Apple Music processes are still running: {names}")
     for process_id, name in processes:
         result = subprocess.run(
             ["taskkill", "/PID", str(process_id), "/T", "/F"],
@@ -207,6 +241,9 @@ def stop_music_processes(processes: list[tuple[int, str]]) -> None:
 
 
 def start_apple_music() -> None:
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-a", "Music"])
+        return
     if sys.platform != "win32":
         return
     subprocess.Popen(
@@ -340,7 +377,7 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, help="Live Library.musicdb; auto-detected on Windows")
+    parser.add_argument("--database", type=Path, help="Live Library.musicdb; auto-detected on Windows and macOS")
     parser.add_argument("--capture", type=Path, help="Recent authenticated mitmproxy .mitm capture")
     parser.add_argument("--sap-signer", type=Path, help="Compatible Windows sapsigner.exe")
     parser.add_argument("--select", help="Album numbers, for example 1,3-5, or all")

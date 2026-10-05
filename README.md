@@ -2,16 +2,15 @@
 
 [繁體中文](README_zh.md)
 
-A Python CLI for finding and repairing albums that Apple Music has split into multiple local album records. The current release supports Apple Music for Windows.
+A Python CLI for finding and repairing albums that Apple Music has split into multiple local album records. The current release supports Apple Music for Windows and local repairs with Music on macOS.
 
 The main command scans the current library, lists only high-confidence repairs, lets you select albums by number, creates a complete rollback backup, repairs the local database, and synchronizes the selected changes to Cloud Library.
 
 ## Requirements
 
-- Windows 10 or Windows 11
-- Apple Music for Windows
+- Windows 10 or Windows 11 with Apple Music for Windows, or macOS with Music
 - [uv](https://docs.astral.sh/uv/)
-- for cloud synchronization, a recent authenticated mitmproxy capture and a compatible `sapsigner.exe`
+- for cloud synchronization (Windows only), a recent authenticated mitmproxy capture and a compatible `sapsigner.exe`
 
 Python packages are declared inside the scripts and installed automatically by `uv`.
 
@@ -89,6 +88,18 @@ The default backup and report directory is:
 
 It contains the complete rollback copy, the local transaction report, the validated repaired database, and the cloud verification result.
 
+## macOS
+
+On macOS only the local database repair is supported, so always pass `--local-only`:
+
+```sh
+uv run --python 3.12 tools/apple_music_split_albums_fixer.py --local-only
+```
+
+The tool finds `~/Music/Music/Music Library.musiclibrary/Library.musicdb` automatically. Before writing it quits Music normally and stops `AMPLibraryAgent`, and `--restart` reopens Music afterwards. Backups go to `~/Music/Apple Music Split Albums Fixer Backups/YYYYMMDD-HHMMSS`.
+
+Cloud Library is not updated directly. The repair marks moved tracks the same way Apple Music does for a local edit, but whether Music uploads the change is not verified. If iCloud Music Library is enabled, check another device after a few days to confirm the albums stay merged.
+
 ## Useful modes
 
 List current problems without writing anything:
@@ -143,7 +154,7 @@ Apple Music's `Library.musicdb` is an encrypted and compressed binary database. 
 4. groups album objects by normalized album title, album artist, and artist;
 5. marks a group safe only when one record has a unique majority, track numbers do not overlap, visible metadata is identical, and the combined sequence is contiguous;
 6. reassigns the outlier tracks to the majority album object and removes unused album records;
-7. updates record counts, section lengths, timestamps, and the outer envelope;
+7. updates record counts, section lengths, timestamps, and the outer envelope (Apple Music 1.7 moved the `hsma` section length from offset 8 to 16 and repeats the file size at envelope offset 128; both layouts are handled);
 8. encrypts and parses the result again before replacing the live file.
 
 Ties, overlapping or missing track numbers, and inconsistent metadata are reported as ambiguous and never offered for automatic repair.
@@ -162,7 +173,7 @@ The lower-level scripts remain available for inspection and manual workflows:
 - `tools/musicdb_duplicate_repair.py`: create a repaired database at a separate output path;
 - `tools/sync_repaired_albums.py`: preview or apply a cloud transaction report.
 
-The scanner, repair planner, binary encoder, and cloud synchronizer are Python modules without Windows UI dependencies. A future macOS version can reuse them and add macOS database discovery and Music process control.
+The scanner, repair planner, binary encoder, and cloud synchronizer are Python modules without Windows UI dependencies. Platform-specific database discovery and Music process control live in `tools/apple_music_split_albums_fixer.py`.
 
 Protocol details and reverse-engineering notes are kept in [research/README.md](research/README.md).
 

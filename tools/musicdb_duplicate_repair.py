@@ -169,13 +169,27 @@ def repair_payload(payload: bytes, plan: list[dict[str, Any]]) -> tuple[bytes, d
     if internal_hfma is None:
         raise ValueError("internal hfma header not found")
 
+    # Apple Music 1.6 and earlier store the hsma span at +8; 1.7 stores zero
+    # there and moves the span to +16. Use whichever matches the real span.
+    album_hsma_end = next(
+        (section.offset for section in sections[lama_index:] if section.tag == "hsma"),
+        len(payload),
+    )
+    album_hsma_span = album_hsma_end - album_hsma.offset
+    span_offset = next(
+        (offset for offset in (8, 16) if u32(output, album_hsma.offset + offset) == album_hsma_span),
+        None,
+    )
+    if span_offset is None:
+        raise ValueError("album hsma section length field not found")
+
     removed_count = len(removed_records)
     removed_length = sum(record["length"] for record in removed_records)
     lama_count = u32(output, lama.offset + 8)
     if lama_count < removed_count:
         raise ValueError("album count underflow")
     put_u32(output, lama.offset + 8, lama_count - removed_count)
-    put_u32(output, album_hsma.offset + 8, u32(output, album_hsma.offset + 8) - removed_length)
+    put_u32(output, album_hsma.offset + span_offset, album_hsma_span - removed_length)
     put_u32(output, internal_hfma.offset + 100, int(time.time()) + APPLE_EPOCH_OFFSET)
 
     for record in sorted(removed_records, key=lambda value: value["offset"], reverse=True):
@@ -206,6 +220,9 @@ def encode_musicdb(source: Path, payload: bytes) -> bytes:
     encryptor = Cipher(algorithms.AES(AES_KEY), modes.ECB()).encryptor()
     compressed[:crypt_size] = encryptor.update(bytes(compressed[:crypt_size])) + encryptor.finalize()
     put_u32(header, 8, len(header) + len(compressed))
+    # Apple Music 1.7 repeats the file size at +128; older versions leave it zero.
+    if len(header) >= 132 and u32(original, 128) == len(original):
+        put_u32(header, 128, len(header) + len(compressed))
     payload_sections = read_sections(payload)
     internal_hfma = next(section for section in payload_sections if section.tag == "hfma" and section.length >= 128)
     lama = next(section for section in payload_sections if section.tag == "lama")
